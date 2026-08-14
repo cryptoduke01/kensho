@@ -307,6 +307,58 @@ Do not re-hunt the combed audited core. Hunt what no auditor saw:
 3. **Post-audit features, integration seams between separately-audited components, and
    cross-chain accounting no single audit owned end to end.**
 
+## 5.7 Recovery / stuck-funds bounties (distinct engagement — usually an unwinnable lottery)
+
+A "recovery bounty" (e.g. Immunefi programs whose ONLY in-scope impact is "unlocking stuck funds")
+pays a % of what you actually free (partial counts — e.g. 25% recovered → a min payout, scaling to the
+cap for 100%). It pays **nothing for an impossibility proof.** So the entire EV is binary: can a
+transaction move the funds, or not. Triage this in an hour before investing days.
+
+**Triage first — a bounty existing is NOT evidence the funds are recoverable.**
+- The team usually can't recover it either; they post the bounty *because* they're stuck ("we found the
+  bug, recovery is the hard part" = they have no path and are outsourcing hope). Posting is free.
+- **Time-open × balance-unmoved is the market's verdict.** A recovery bounty open for years with a large
+  prize and the balance still untouched (`eth_getBalance` == the "stuck" figure, contract nonce ~1) means
+  the entire hunter population already tried and failed. Strong prior: genuinely bricked.
+
+**Method (verified source + a fork):**
+1. Enumerate EVERY value-out primitive (`grep` all files for `call{value`, `.send`, `.transfer`,
+   `selfdestruct`, `delegatecall`, payable fns). Old contracts often have exactly ONE ETH exit.
+2. For each exit, find its reachability GATE (the state/role/time condition) and ask: can any tx from
+   anyone (owner included) satisfy it *now*? Map every writer of the gating storage.
+3. **Verify bytecode == verified source** — don't trust source-grep. Compile the verified source with the
+   pinned solc and byte-compare to the deployed runtime (mask library-link addresses + the trailing CBOR
+   metadata). Gotchas: a `SELFDESTRUCT` opcode hit is often a **false positive inside the metadata
+   trailer** (data, not code); `DELEGATECALL`s to a `public library` (SafeMath-style pure math) are
+   benign and move no ETH. No proxy/CREATE2/metamorphic = no code-injection recovery.
+4. **Storage-surgery test (the decisive question):** which single storage slot, if overwritten, frees the
+   funds — and does ANY on-chain function write it? If freeing requires **N simultaneous writes across
+   multiple contracts** (proven by a god-mode fork test that rewrites slots and STILL reverts), the only
+   "fix" is an L1 irregular state change / hard fork — not a hunter's tool, refused since The DAO =
+   **unrecoverable, walk.**
+5. Run it as an **adversarial multi-agent harness**: each agent's mandate is to REFUTE impossibility by
+   building a fork PoC that extracts the ETH, across distinct vectors (state-machine revival via owner
+   levers, dependency-contract exploitation, bytecode/low-level, storage surgery). All vectors failing
+   with passing fork tests = a rigorous (but unpaid) impossibility proof.
+
+**Freeze patterns in old TokenMarket / ICO crowdsale contracts (seen live — UTIX, 451 ETH, 4 permanent
+locks, any one fatal):**
+- Sole ETH exit is a `withdrawContractFund`-style send gated behind `State.Funding`.
+- `Funding` needs `block.timestamp <= endsAt`; `setEndsAt`/`setStartsAt` self-`assert(block.timestamp <=
+  endsAt/startsAt)` → **unextendable once the window closes.** Permanent.
+- `setFinalizeAgent` `assert`s the agent is unset → a broken/insane finalizeAgent can never be re-pointed
+  → stuck in `Preparing` forever (`getState` returns `Preparing` while `!finalizeAgent.isSane()`).
+- **Inverted `require(extcodesize(multisig)==0)` (EOA-only) in the withdraw** → if the multisig is a Safe
+  (a contract), every forward reverts. This is a common *original* stuck-funds cause; `setMultisig` is
+  itself gated (`investorCount > MAX`), so it can't be repointed.
+- One-way flags (`released`, `mintingFinished`) can't be reversed → the `invest → mint` path dies too.
+- `weiRaised` is monotonic and `allocate()` can inflate it above the real ETH balance → the
+  "withdraw `weiRaised`" branch becomes **mathematically unsatisfiable** (tries to send more than held).
+
+**Verdict discipline:** most recovery bounties on truly-frozen funds are unwinnable — the honest,
+high-value move is a fast rigorous triage, then walk. Wanting it more does not melt steel. Redirect the
+same intensity to live, *reachable* targets.
+
 ---
 
 # PART 6 — PROOF OF CONCEPT STANDARDS
@@ -589,6 +641,30 @@ about X, it's about Y.", "But here's the thing.", "The truth/reality is…", "Wh
 don't realize…", "Let's break it down.", "Here's the catch.", "Think about it.", "This
 underscores/raises the question…", "The bigger picture…". No em dashes as a crutch, no
 emoji in professional reports. Human tone, plain and precise.
+
+## 11.6 The Kensho Engine (corpus + targeting + backtest) — the base-flow multiplier
+
+A companion intelligence engine lives at `bounty-hunt-tracker/kensho-engine/` (stdlib Python, no
+deps). It makes every hunt start from what has actually been exploited, not a blank page, and it
+gets sharper daily. Three uses:
+
+- **Targeting (run BEFORE reading a live target):** `python3 query.py target <protocol-type>`
+  ranks the bug classes that historically hit that protocol type (lending → flash-loan/spot-oracle;
+  token → reflection/transfer-tax; governance → takeover; vault → first-depositor/accounting;
+  bridge → cross-chain), each with its Kensho §5.3/§5.4 ref and example PoCs. This is how you
+  diff-hunt a listed/audited program fast (Part 5.6) — audit the historically-bug-prone surface
+  first.
+- **Backtest (the flywheel):** `backtest/run.py bench N [ptype]` emits a BLIND worklist (known class
+  sealed); audit each (you or an agent fleet), then `score` for catch-rate. Every MISS is a method
+  gap you turn into a new heuristic here in §5.3/§5.4. Corpus PoCs are runnable (DeFiHackLabs), so
+  `verify` reproduces them on a fork.
+- **Grow + learn:** `daily.py` pulls every source (DeFiHackLabs realized-exploits + DeFiVulnLabs
+  patterns today; add `pull/<source>.py` for Solodit/C4/Sherlock) and dedupes idempotently;
+  `learn.py report` regenerates the prioritization signal + taxonomy gaps + backtest misses. Wire
+  `daily.py` to cron / the `schedule` skill so the corpus (and this playbook) compound over time.
+
+`taxonomy.json` is the shared bug-class vocabulary (mapped to the refs in this file); keep it and
+§5.3 in sync as new classes are learned.
 
 ---
 
