@@ -272,6 +272,19 @@ receive more; external call before state update (reentrancy).
 10. **Fee-on-transfer over-credit.** `deposited[user]+=amount` then `transferFrom` → if
     the token taxes transfers, credited > received. *Only real if the token taxes plain
     wallet transfers* (many launch tokens tax only pool swaps → not FoT; verify `_update`).
+11. **Pull-oracle settlement with a loose price-time window (RedStone/Pyth "tap trade" engines).**
+    Settlement takes a caller-supplied signed price payload and validates it against a WALL-CLOCK
+    window (`block.timestamp-Δ ≤ payload_ts ≤ block.timestamp+δ`, e.g. RedStone's default
+    `[now-180s, now+60s]`). If settlement is permissionless AND there is no upper bound on WHEN a
+    position may be settled, an attacker defers settlement and then submits any in-window signed
+    tick — picking the historical price that converts their loss to a win. *Detect:* find the
+    timestamp gate (look for the `TIMESTAMP` opcode / `validateTimestamp`); check whether the
+    accepted price is pinned to the position's own entry/expiry tick or merely to `block.timestamp`.
+    *Fix (and the HARDENED reference — a production tap-trade engine got this right):* derive `settleTime = openTime +
+    duration` from position storage and require `payload_ts == settleTime` **exactly** (sub-second),
+    so the price is cryptographically + temporally pinned to one canonical signed value — plus a
+    signer allowlist so only genuine oracle-signed tuples pass. When you see that exact-tick bind,
+    the stale-price thesis is dead; do not force it. The bug lives only where the window is loose.
 
 ## 5.4 Reusable detection heuristics (grep passes on any target)
 - **Solmate `SafeTransferLib` + unchecked token address** → transfer to a codeless
@@ -286,6 +299,28 @@ receive more; external call before state update (reentrancy).
   arbitrary-call primitive.
 - **State incremented before a low-level send whose bool return is ignored** → accounting
   corruption on send failure.
+
+### 5.4.1 Unverified-bytecode discipline (learned the hard way — cost two false verdicts on one target)
+On an **unverified contract, never decide function identity or access-control by reading decompiled
+bytecode.** Heimdall/Panoramix mislabel constantly: two independent expert agents both mis-identified
+the settlement function (one audited a `view` getter as the value-mover; the other invented a keeper
+gate that on-chain data disproved). Bytecode reversing is a *hypothesis generator*, not evidence.
+Settle these questions **empirically instead**, and treat the empirical answer as ground truth:
+- **"Which selector actually moves the money?"** → replay a REAL tx of each candidate on a local fork
+  and watch which one emits the `transfer`/payout. A function that reverts `payable`-less or emits no
+  value event is not the mover. *(Verify a claimed value-mover is payable and actually transfers —
+  not a view getter.)*
+- **"Is it permissionless or role-gated?"** → tally the DISTINCT senders of that selector over a real
+  block window (`eth_getBlockByNumber(n,true)` batched). Many distinct successful senders = permissionless;
+  one recurring address = a keeper/role. Then **confirm on a fork**: replay the exact calldata from a
+  fresh random address — identical success = permissionless; revert at a gate = role-gated (the fork
+  shows the revert selector the public RPC hides).
+- **"Does this guard exist?"** → mutate the one storage slot / caller on the fork and see if it flips
+  the outcome (e.g. shifting a stored timestamp by 1s surfaced the exact `expected/actual` revert that
+  proved a sub-second bind). A guard you can toggle on a fork is real; a guard you only read in
+  decompiled assembly is a guess.
+- **Do NOT call a verdict — "confirmed" OR "dead" — until the load-bearing fact is fork-proven.**
+  Every premature call in this episode was wrong. Ground truth first, verdict second.
 
 ## 5.5 Quality gate (adversarial self-review — mandatory before PoC/report)
 For each candidate, answer honestly:
