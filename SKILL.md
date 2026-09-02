@@ -109,7 +109,7 @@ The crowded platform route on hardened, audited code with hostile scope is usual
 ## 3.1 Intake sheet
 
 ```
-PROJECT_NAME   : <e.g. hood.fun>
+PROJECT_NAME   : <project name or slug>
 X_HANDLE       : <@handle>                    # to find the private disclosure channel
 WEBSITE        : <https://...>                # app URL (where positions/tokens render)
 DOCS           : <https://docs... or "none">
